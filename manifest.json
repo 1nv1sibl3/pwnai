@@ -1,0 +1,9 @@
+{
+  "name": "puffin",
+  "description": "a binary exploitation challenge for testing",
+  "category": "pwn",
+  "host": "",
+  "port": "",
+  "source": "challenges/puffin",
+  "flag_format": "flag{}"
+}

@@ -1,0 +1,39 @@
+services:
+  ctf-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ctf-dev
+
+    # Host net is useful for CTF tooling and local service access.
+    network_mode: host
+
+    # Many security tools require elevated capabilities.
+    privileged: true
+
+    working_dir: /workspace
+
+    # Bind-mount your full project for live editing.
+    volumes:
+      - ./:/workspace
+      - ./logs:/workspace/logs
+
+    # Load local .env (GITHUB_TOKEN, API keys, model, etc.).
+    env_file:
+      - ./.env
+
+    # Interactive dev shell style container.
+    stdin_open: true
+    tty: true
+
+    restart: unless-stopped
+
+    # Resource limits (applied by Swarm; harmless in regular compose).
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 6G
+        reservations:
+          cpus: '1'
+          memory: 2G
