@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, TypedDict
 
+from pydantic import BaseModel
+from scripts.mcp_tool_mapping import prepareIdaToolsForOpenAI
 
 PLAYGROUND_PATH = Path("/workspace/playground")
 ARTIFACT_PATH = PLAYGROUND_PATH / "artifacts" / "binary_analysis.json"
@@ -20,13 +22,26 @@ class BinaryAnalysisError(RuntimeError):
     pass
 
 
+class Analysis(BaseModel):
+    summary: str
+    vulnerabilities: list[Any]
+    exploitation_primitives: list[Any]
+
+
+class BinaryAnalysisReport(BaseModel):
+    challenge: dict[str, Any]
+    binary: dict[str, Any]
+    recon: dict[str, Any]
+    analysis: Analysis
+
+
 class BinaryAnalysisState(TypedDict):
     challengeDetails: dict[str, Any]
     manifestPath: str
     playgroundPath: str
     targetBinaryPath: str
     recon: dict[str, Any]
-    idaFindingsText: str
+    idaFindings: dict[str, Any]
     finalReport: dict[str, Any]
 
 
@@ -57,13 +72,11 @@ def resolveTargetBinary(challengeDetails: dict[str, Any], playgroundPath: str, b
     sourcePath = root / Path(str(challengeDetails["source"])).name
     if sourcePath.is_file():
         return str(sourcePath)
-
     if binaryName:
         matches = [p for p in root.rglob(binaryName) if p.is_file()]
         if len(matches) != 1:
             raise BinaryAnalysisError(f"expected exactly one match for '{binaryName}', got {len(matches)}")
         return str(matches[0])
-
     candidates = [p for p in root.rglob("*") if isExecutableElf(p)]
     if len(candidates) != 1:
         raise BinaryAnalysisError(
@@ -97,12 +110,14 @@ def runReconNode(state: BinaryAnalysisState) -> dict[str, Any]:
     cwd = state["playgroundPath"]
     fileResult = runCommand(f"file {target}", cwd)
     headerResult = runCommand(f"readelf -h {target}", cwd)
+    checksecResult = runCommand(f"checksec {target}", cwd)
     interpResult = runCommand(f"readelf -l {target} | grep interpreter || true", cwd, allowNonZero=True)
     return {
         "recon": {
-            "commands": [fileResult, headerResult, interpResult],
+            "commands": [fileResult, headerResult, checksecResult, interpResult],
             "file": fileResult["stdout"].strip(),
             "readelf_header": headerResult["stdout"].strip(),
+            "checksec": checksecResult["stdout"].strip(),
             "interpreter": interpResult["stdout"].strip(),
         }
     }
@@ -113,15 +128,15 @@ def buildSystemPrompt(state: BinaryAnalysisState) -> str:
     reconSummary = {
         "file": recon.get("file", ""),
         "readelf_header": recon.get("readelf_header", ""),
+        "checksec": recon.get("checksec", ""),
         "interpreter": recon.get("interpreter", ""),
     }
     return (
         "You are a binary exploitation analyst using IDA MCP tools.\n"
-        "Find vulnerabilities for this binary exploitation CTF challenge only in the main function.\n"
+        "Find vulnerabilities for this binary exploitation CTF challenge.\n"
         "Use tools only when needed, do not repeat the same tool calls.\n"
         "When you have enough evidence, stop calling tools and return final output.\n"
-        "Return only JSON with keys: challenge, binary, recon, analysis.\n"
-        "analysis must include: summary, vulnerabilities, exploitation_primitives, recommended_next_steps. Include exact details such as memory addresses,sizes,etc.\n\n"
+        "Include exact details such as memory addresses, sizes, etc.\n\n"
         f"Challenge details:\n{json.dumps(state['challengeDetails'], indent=2, sort_keys=True)}\n\n"
         f"Playground path: {state['playgroundPath']}\n"
         f"Target binary path: {state['targetBinaryPath']} (Binary has been loaded in IDA)\n\n"
@@ -129,15 +144,7 @@ def buildSystemPrompt(state: BinaryAnalysisState) -> str:
     )
 
 
-def extractMessageText(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in content)
-    return str(content)
-
-
-async def runIdaAnalysisAsync(state: BinaryAnalysisState) -> str:
+async def runIdaAnalysisAsync(state: BinaryAnalysisState) -> dict[str, Any]:
     try:
         from langchain.agents import create_agent
         from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -145,58 +152,52 @@ async def runIdaAnalysisAsync(state: BinaryAnalysisState) -> str:
     except ModuleNotFoundError as exc:
         raise BinaryAnalysisError("missing dependencies, rebuild container from updated Dockerfile") from exc
 
-    client = MultiServerMCPClient({"ida": {"transport": "http", "url": requireEnv("IDA_MCP_URL")}})
-    tools = await client.get_tools()
     model = ChatOpenAI(model=requireEnv("MODEL"), api_key=requireEnv("OPENAI_KEY"), temperature=0)
-    agent = create_agent(model=model, tools=tools, system_prompt=buildSystemPrompt(state))
+    client = MultiServerMCPClient({"ida": {"transport": "http", "url": requireEnv("IDA_MCP_URL")}})
+    tools = prepareIdaToolsForOpenAI(model, await client.get_tools(), log=status)
+    agent = create_agent(
+        model=model,
+        tools=tools,
+        response_format=BinaryAnalysisReport,
+        system_prompt=buildSystemPrompt(state),
+    )
     try:
-        result = agent.ainvoke(
+        result = await asyncio.wait_for(
+            agent.ainvoke(
                 {
                     "messages": [
                         {
                             "role": "user",
                             "content": (
-                                "Analyze the binary and return only valid JSON. "
+                                "Analyze the binary and populate every field of the output schema. "
                                 "Do not call tools once you can fill the final schema."
                             ),
                         }
                     ]
                 },
                 config={"recursion_limit": 60},
-            )
+            ),
+            timeout=240,
+        )
+    except asyncio.TimeoutError as exc:
+        raise BinaryAnalysisError("IDA analysis timed out before final output") from exc
     except Exception as exc:
         raise BinaryAnalysisError(f"IDA analysis failed: {exc}") from exc
-    messages = result.get("messages", [])
-    if not messages:
-        raise BinaryAnalysisError("agent returned no messages")
-    return extractMessageText(getattr(messages[-1], "content", messages[-1])).strip()
+
+    structured: BinaryAnalysisReport | None = result.get("structured_response")
+    if structured is None:
+        raise BinaryAnalysisError("agent returned no structured response")
+    return structured.model_dump()
 
 
 def runIdaNode(state: BinaryAnalysisState) -> dict[str, Any]:
     status("[binary-analysis] ida agent")
-    return {"idaFindingsText": asyncio.run(runIdaAnalysisAsync(state))}
-
-
-def parseReport(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = "\n".join(line for line in cleaned.splitlines() if not line.startswith("```")).strip()
-    report = json.loads(cleaned)
-    for key in ["challenge", "binary", "recon", "analysis"]:
-        if key not in report:
-            raise BinaryAnalysisError(f"report missing key: {key}")
-    analysis = report["analysis"]
-    if not isinstance(analysis, dict):
-        raise BinaryAnalysisError("report analysis must be an object")
-    for key in ["summary", "vulnerabilities", "exploitation_primitives", "recommended_next_steps"]:
-        if key not in analysis:
-            raise BinaryAnalysisError(f"report analysis missing key: {key}")
-    return report
+    return {"idaFindings": asyncio.run(runIdaAnalysisAsync(state))}
 
 
 def validateAndPersistNode(state: BinaryAnalysisState) -> dict[str, Any]:
     status("[binary-analysis] writing artifact")
-    report = parseReport(state["idaFindingsText"])
+    report = state["idaFindings"]
     writeJson(str(ARTIFACT_PATH), report)
     return {"finalReport": report}
 
@@ -229,7 +230,7 @@ def runBinaryAnalysisAgent(manifestPath: str, binaryName: str | None = None) -> 
             "playgroundPath": str(PLAYGROUND_PATH),
             "targetBinaryPath": targetBinaryPath,
             "recon": {},
-            "idaFindingsText": "",
+            "idaFindings": {},
             "finalReport": {},
         }
     )
