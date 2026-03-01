@@ -25,7 +25,6 @@ class BinaryAnalysisError(RuntimeError):
 class Analysis(BaseModel):
     summary: str
     vulnerabilities: list[Any]
-    exploitation_primitives: list[Any]
 
 
 class BinaryAnalysisReport(BaseModel):
@@ -110,14 +109,15 @@ def runReconNode(state: BinaryAnalysisState) -> dict[str, Any]:
     cwd = state["playgroundPath"]
     fileResult = runCommand(f"file {target}", cwd)
     headerResult = runCommand(f"readelf -h {target}", cwd)
-    checksecResult = runCommand(f"checksec {target}", cwd)
+    checksecResult = runCommand(f"TERM=dumb checksec --file={target}", cwd, allowNonZero=True)
+    checksecText = (checksecResult["stderr"] or checksecResult["stdout"]).strip()
     interpResult = runCommand(f"readelf -l {target} | grep interpreter || true", cwd, allowNonZero=True)
     return {
         "recon": {
             "commands": [fileResult, headerResult, checksecResult, interpResult],
             "file": fileResult["stdout"].strip(),
             "readelf_header": headerResult["stdout"].strip(),
-            "checksec": checksecResult["stdout"].strip(),
+            "checksec": checksecText,
             "interpreter": interpResult["stdout"].strip(),
         }
     }
@@ -132,15 +132,13 @@ def buildSystemPrompt(state: BinaryAnalysisState) -> str:
         "interpreter": recon.get("interpreter", ""),
     }
     return (
-        "You are a binary exploitation analyst using IDA MCP tools.\n"
+        "You are a binary exploitation analyst using IDA MCP tools. (Binary has been loaded in IDA)\n"
         "Find vulnerabilities for this binary exploitation CTF challenge.\n"
         "Use tools only when needed, do not repeat the same tool calls.\n"
         "When you have enough evidence, stop calling tools and return final output.\n"
-        "Include exact details such as memory addresses, sizes, etc.\n\n"
-        f"Challenge details:\n{json.dumps(state['challengeDetails'], indent=2, sort_keys=True)}\n\n"
-        f"Playground path: {state['playgroundPath']}\n"
-        f"Target binary path: {state['targetBinaryPath']} (Binary has been loaded in IDA)\n\n"
-        f"Surface recon:\n{json.dumps(reconSummary, indent=2, sort_keys=True)}"
+        "Include exact details such as memory addresses, sizes, etc. Do not include mitigation recommendations in the final output.\n\n"
+        f"Challenge details:\n{json.dumps(state['challengeDetails'], sort_keys=True)}\n\n"
+        f"Surface recon:\n{json.dumps(reconSummary, sort_keys=True)}"
     )
 
 
