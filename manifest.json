@@ -1,9 +1,9 @@
 {
-  "name": "puffin",
+  "name": "bigboi",
   "description": "a binary exploitation challenge for testing",
   "category": "pwn",
-  "host": "",
-  "port": "",
-  "source": "challenges/puffin",
+  "host": "192.168.1.9",
+  "port": "1436",
+  "source": "challenges/boi",
   "flag_format": "flag{}"
 }

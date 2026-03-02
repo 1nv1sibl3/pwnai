@@ -8,7 +8,6 @@
     "rename",
     "stack_frame",
     "xrefs_to",
-    "list_globals",
     "read_struct",
     "xrefs_to_field"
   ],

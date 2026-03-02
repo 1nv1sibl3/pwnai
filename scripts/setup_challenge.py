@@ -127,6 +127,7 @@ async def main() -> int:
                 f"mkdir -p {quote(str(PLAYGROUND_PATH))}",
                 copyCmd,
                 f"mkdir -p {quote(str(PLAYGROUND_PATH / 'artifacts'))}",
+                f"echo {quote('flag{test_flag}')} > {quote(str(PLAYGROUND_PATH / 'flag.txt'))}"
             ]
         )
         dockerExec(setupCmd)
