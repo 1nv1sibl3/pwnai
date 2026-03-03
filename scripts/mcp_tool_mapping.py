@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 MAP_PATH = Path(__file__).parent.parent / "mcp-map.json"
 
@@ -24,12 +24,43 @@ class PayloadJsonArgs(BaseModel):
     )
 
 
-class ExecuteArgs(BaseModel):
-    command: str = Field(description="Raw GDB/pwndbg command.")
+def toPythonType(schema: dict[str, Any]) -> Any:
+    schemaType = schema.get("type")
+    if schemaType == "string":
+        return str
+    if schemaType == "integer":
+        return int
+    if schemaType == "number":
+        return float
+    if schemaType == "boolean":
+        return bool
+    if schemaType == "array":
+        items = schema.get("items", {})
+        itemType = toPythonType(items if isinstance(items, dict) else {})
+        return list[itemType] if itemType is not Any else list[Any]
+    if schemaType == "object":
+        return dict[str, Any]
+    anyOf = schema.get("anyOf")
+    if isinstance(anyOf, list) and anyOf:
+        nonNull = [entry for entry in anyOf if entry.get("type") != "null"]
+        if nonNull:
+            return toPythonType(nonNull[0] if isinstance(nonNull[0], dict) else {})
+    return Any
 
 
-class SetFileArgs(BaseModel):
-    binary_path: str = Field(description="Absolute path to target binary.")
+def makeSchemaArgsModel(name: str, inputSchema: dict[str, Any]):
+    properties = inputSchema.get("properties", {}) if isinstance(inputSchema, dict) else {}
+    required = set(inputSchema.get("required", [])) if isinstance(inputSchema, dict) else set()
+    fields: dict[str, tuple[Any, Any]] = {}
+    for key, prop in properties.items():
+        propSchema = prop if isinstance(prop, dict) else {}
+        fieldType = toPythonType(propSchema)
+        default = ... if key in required and "default" not in propSchema else propSchema.get("default", None)
+        if key not in required and default is None:
+            fieldType = fieldType | None
+        fields[key] = (fieldType, Field(default=default, description=propSchema.get("description", "")))
+    modelName = "".join(part.capitalize() for part in name.split("_")) + "Args"
+    return create_model(modelName, **fields)
 
 
 def loadMap(path: Path = MAP_PATH) -> dict[str, Any]:
@@ -93,35 +124,35 @@ def makePayloadTool(rawTool: Any, spec: dict[str, Any]):
     )
 
 
-def makeExecuteTool(rawTool: Any, spec: dict[str, Any]):
+def makeSchemaTool(rawTool: Any, spec: dict[str, Any]):
     from langchain_core.tools import StructuredTool
 
-    description = spec.get("description") or getattr(rawTool, "description", "Execute GDB/pwndbg command.")
+    name = getattr(rawTool, "name", "mcp_tool")
+    inputSchema = spec.get("inputSchema", {})
+    argsModel = makeSchemaArgsModel(name, inputSchema if isinstance(inputSchema, dict) else {})
+    description = spec.get("description") or getattr(rawTool, "description", name)
 
-    async def execute(command: str) -> Any:
-        return await rawTool.ainvoke({"command": command})
+    props = inputSchema.get("properties", {}) if isinstance(inputSchema, dict) else {}
+    if not props:
+        async def callToolNoArgs() -> Any:
+            return await rawTool.ainvoke({})
+
+        return StructuredTool.from_function(
+            coroutine=callToolNoArgs,
+            name=name,
+            description=description,
+            args_schema=argsModel,
+        )
+
+    async def callTool(**kwargs: Any) -> Any:
+        payload = {k: v for k, v in kwargs.items() if v is not None}
+        return await rawTool.ainvoke(payload)
 
     return StructuredTool.from_function(
-        coroutine=execute,
-        name="execute",
+        coroutine=callTool,
+        name=name,
         description=description,
-        args_schema=ExecuteArgs,
-    )
-
-
-def makeSetFileTool(rawTool: Any, spec: dict[str, Any]):
-    from langchain_core.tools import StructuredTool
-
-    description = spec.get("description") or getattr(rawTool, "description", "Set binary file.")
-
-    async def setFile(binary_path: str) -> Any:
-        return await rawTool.ainvoke({"binary_path": binary_path})
-
-    return StructuredTool.from_function(
-        coroutine=setFile,
-        name="set_file",
-        description=description,
-        args_schema=SetFileArgs,
+        args_schema=argsModel,
     )
 
 
@@ -173,12 +204,7 @@ def prepareDbgToolsForOpenAI(
         if rawTool is None:
             continue
         spec = specs.get(name, {})
-        if name == "execute":
-            tool = makeExecuteTool(rawTool, spec)
-        elif name == "set_file":
-            tool = makeSetFileTool(rawTool, spec)
-        else:
-            tool = makePayloadTool(rawTool, spec)
+        tool = makeSchemaTool(rawTool, spec)
         model.bind_tools([tool])
         prepared.append(tool)
 

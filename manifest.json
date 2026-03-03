@@ -1,9 +1,9 @@
 {
-  "name": "roppity",
+  "name": "unlimited_subway",
   "description": "a binary exploitation challenge for testing",
   "category": "pwn",
   "host": "192.168.1.9",
-  "port": "8000",
-  "source": "/workspace/challenges/roppity",
+  "port": "7900",
+  "source": "/workspace/challenges/unlimited_subway",
   "flag_format": "flag{}"
 }
