@@ -1,9 +1,9 @@
 {
-  "name": "bigboi",
+  "name": "roppity",
   "description": "a binary exploitation challenge for testing",
   "category": "pwn",
   "host": "192.168.1.9",
-  "port": "1436",
-  "source": "challenges/boi",
+  "port": "8000",
+  "source": "challenges/roppity/rop",
   "flag_format": "flag{}"
 }

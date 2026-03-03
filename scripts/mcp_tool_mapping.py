@@ -24,6 +24,14 @@ class PayloadJsonArgs(BaseModel):
     )
 
 
+class ExecuteArgs(BaseModel):
+    command: str = Field(description="Raw GDB/pwndbg command.")
+
+
+class SetFileArgs(BaseModel):
+    binary_path: str = Field(description="Absolute path to target binary.")
+
+
 def loadMap(path: Path = MAP_PATH) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -85,6 +93,38 @@ def makePayloadTool(rawTool: Any, spec: dict[str, Any]):
     )
 
 
+def makeExecuteTool(rawTool: Any, spec: dict[str, Any]):
+    from langchain_core.tools import StructuredTool
+
+    description = spec.get("description") or getattr(rawTool, "description", "Execute GDB/pwndbg command.")
+
+    async def execute(command: str) -> Any:
+        return await rawTool.ainvoke({"command": command})
+
+    return StructuredTool.from_function(
+        coroutine=execute,
+        name="execute",
+        description=description,
+        args_schema=ExecuteArgs,
+    )
+
+
+def makeSetFileTool(rawTool: Any, spec: dict[str, Any]):
+    from langchain_core.tools import StructuredTool
+
+    description = spec.get("description") or getattr(rawTool, "description", "Set binary file.")
+
+    async def setFile(binary_path: str) -> Any:
+        return await rawTool.ainvoke({"binary_path": binary_path})
+
+    return StructuredTool.from_function(
+        coroutine=setFile,
+        name="set_file",
+        description=description,
+        args_schema=SetFileArgs,
+    )
+
+
 def prepareIdaToolsForOpenAI(
     model: Any,
     rawTools: list[Any],
@@ -133,7 +173,12 @@ def prepareDbgToolsForOpenAI(
         if rawTool is None:
             continue
         spec = specs.get(name, {})
-        tool = makePayloadTool(rawTool, spec)
+        if name == "execute":
+            tool = makeExecuteTool(rawTool, spec)
+        elif name == "set_file":
+            tool = makeSetFileTool(rawTool, spec)
+        else:
+            tool = makePayloadTool(rawTool, spec)
         model.bind_tools([tool])
         prepared.append(tool)
 
