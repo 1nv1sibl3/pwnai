@@ -175,7 +175,7 @@ async def runIdaAnalysisAsync(state: BinaryAnalysisState) -> dict[str, Any]:
                 },
                 config={"recursion_limit": 60},
             ),
-            timeout=240,
+            timeout=420,
         )
     except asyncio.TimeoutError as exc:
         raise BinaryAnalysisError("IDA analysis timed out before final output") from exc
