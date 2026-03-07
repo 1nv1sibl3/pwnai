@@ -112,13 +112,19 @@ def runReconNode(state: BinaryAnalysisState) -> dict[str, Any]:
     checksecResult = runCommand(f"TERM=dumb checksec --file={target}", cwd, allowNonZero=True)
     checksecText = (checksecResult["stderr"] or checksecResult["stdout"]).strip()
     interpResult = runCommand(f"readelf -l {target} | grep interpreter || true", cwd, allowNonZero=True)
+    glibcResult = runCommand(
+        f"readelf --version-info {target} | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1 || true",
+        cwd,
+        allowNonZero=True,
+    )
     return {
         "recon": {
-            "commands": [fileResult, headerResult, checksecResult, interpResult],
+            "commands": [fileResult, headerResult, checksecResult, interpResult, glibcResult],
             "file": fileResult["stdout"].strip(),
             "readelf_header": headerResult["stdout"].strip(),
             "checksec": checksecText,
             "interpreter": interpResult["stdout"].strip(),
+            "glibc_version": glibcResult["stdout"].strip(),
         }
     }
 
@@ -130,6 +136,7 @@ def buildSystemPrompt(state: BinaryAnalysisState) -> str:
         "readelf_header": recon.get("readelf_header", ""),
         "checksec": recon.get("checksec", ""),
         "interpreter": recon.get("interpreter", ""),
+        "glibc_version": recon.get("glibc_version", ""),
     }
     return (
         "You are a binary exploitation analyst using IDA MCP tools. (Binary has been loaded in IDA)\n"
