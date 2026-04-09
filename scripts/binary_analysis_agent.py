@@ -13,6 +13,7 @@ from typing import Any, TypedDict
 
 from pydantic import BaseModel
 from scripts.mcp_tool_mapping import prepareIdaToolsForOpenAI
+from scripts.model_provider import createChatModel
 
 PLAYGROUND_PATH = Path("/workspace/playground")
 ARTIFACT_PATH = PLAYGROUND_PATH / "artifacts" / "binary_analysis.json"
@@ -158,11 +159,10 @@ async def runIdaAnalysisAsync(state: BinaryAnalysisState) -> dict[str, Any]:
     try:
         from langchain.agents import create_agent
         from langchain_mcp_adapters.client import MultiServerMCPClient
-        from langchain_openai import ChatOpenAI
     except ModuleNotFoundError as exc:
         raise BinaryAnalysisError("missing dependencies, rebuild container from updated Dockerfile") from exc
 
-    model = ChatOpenAI(model=requireEnv("MODEL"), api_key=requireEnv("OPENAI_KEY"), temperature=0)
+    model = createChatModel(temperature=0)
     client = MultiServerMCPClient({"ida": {"transport": "http", "url": requireEnv("IDA_MCP_URL")}})
     tools = prepareIdaToolsForOpenAI(model, await client.get_tools(), log=status)
     agent = create_agent(
@@ -235,8 +235,7 @@ def buildGraph():
 
 
 def runBinaryAnalysisAgent(manifestPath: str, binaryName: str | None = None) -> dict[str, Any]:
-    requireEnv("OPENAI_KEY")
-    requireEnv("MODEL")
+    createChatModel(temperature=0)
     requireEnv("IDA_MCP_URL")
     challengeDetails = loadChallengeDetails(manifestPath)
     targetBinaryPath = resolveTargetBinary(challengeDetails, str(PLAYGROUND_PATH), binaryName)

@@ -1,0 +1,9 @@
+pwntools
+angr
+pycryptodome
+langgraph
+langchain
+langchain-openai
+langchain-mcp-adapters
+mcp
+httpx
