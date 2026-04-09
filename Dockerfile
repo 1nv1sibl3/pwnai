@@ -18,15 +18,8 @@ RUN mkdir -p /root/.pip && \
     echo "[global]" > /root/.pip/pip.conf && \
     echo "break-system-packages = true" >> /root/.pip/pip.conf
 
-RUN pip3 install \
-    pwntools \
-    angr \
-    pycryptodome \
-    langgraph \
-    langchain \
-    langchain-openai \
-    langchain-mcp-adapters \
-    mcp
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install -r /tmp/requirements.txt
 
 WORKDIR /workspace
 
